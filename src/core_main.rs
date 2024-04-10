@@ -3,10 +3,10 @@ use crate::client::translate;
 #[cfg(not(debug_assertions))]
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use crate::platform::breakdown_callback;
-use hbb_common::log;
 #[cfg(not(debug_assertions))]
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use hbb_common::platform::register_breakdown_handler;
+use hbb_common::{config, log};
 #[cfg(windows)]
 use tauri_winrt_notification::{Duration, Sound, Toast};
 
@@ -38,6 +38,7 @@ fn is_empty_uni_link(arg: &str) -> bool {
 /// If it returns [`Some`], then the process will continue, and flutter gui will be started.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn core_main() -> Option<Vec<String>> {
+    crate::load_custom_client();
     #[cfg(windows)]
     crate::platform::windows::bootstrap();
     let mut args = Vec::new();
@@ -91,7 +92,7 @@ pub fn core_main() -> Option<Vec<String>> {
     #[cfg(feature = "flutter")]
     {
         let (k, v) = ("LIBGL_ALWAYS_SOFTWARE", "1");
-        if !hbb_common::config::Config::get_option("allow-always-software-render").is_empty() {
+        if !config::Config::get_option("allow-always-software-render").is_empty() {
             std::env::set_var(k, v);
         } else {
             std::env::remove_var(k);
@@ -106,7 +107,7 @@ pub fn core_main() -> Option<Vec<String>> {
         return core_main_invoke_new_connection(std::env::args());
     }
     let click_setup = cfg!(windows) && args.is_empty() && crate::common::is_setup(&arg_exe);
-    if click_setup {
+    if click_setup && !config::is_disable_installation() {
         args.push("--install".to_owned());
         flutter_args.push("--install".to_string());
     }
@@ -183,6 +184,9 @@ pub fn core_main() -> Option<Vec<String>> {
                 }
                 return None;
             } else if args[0] == "--silent-install" {
+                if config::is_disable_installation() {
+                    return None;
+                }
                 let res = platform::install_me(
                     "desktopicon startmenu",
                     "".to_owned(),
@@ -197,38 +201,18 @@ pub fn core_main() -> Option<Vec<String>> {
                     }
                 };
                 Toast::new(Toast::POWERSHELL_APP_ID)
-                    .title(&hbb_common::config::APP_NAME.read().unwrap())
+                    .title(&config::APP_NAME.read().unwrap())
                     .text1(&text)
                     .sound(Some(Sound::Default))
                     .duration(Duration::Short)
                     .show()
                     .ok();
                 return None;
-            } else if args[0] == "--install-cert" {
-                #[cfg(windows)]
-                hbb_common::allow_err!(crate::platform::windows::install_cert(
-                    crate::platform::windows::DRIVER_CERT_FILE
-                ));
-                if args.len() > 1 && args[1] == "silent" {
-                    return None;
-                }
-                #[cfg(all(windows, feature = "virtual_display_driver"))]
-                if crate::virtual_display_manager::is_virtual_display_supported() {
-                    hbb_common::allow_err!(crate::virtual_display_manager::install_update_driver());
-                }
-                return None;
             } else if args[0] == "--uninstall-cert" {
                 #[cfg(windows)]
                 hbb_common::allow_err!(crate::platform::windows::uninstall_cert());
                 return None;
             } else if args[0] == "--install-idd" {
-                #[cfg(windows)]
-                {
-                    // It's ok to install cert multiple times.
-                    hbb_common::allow_err!(crate::platform::windows::install_cert(
-                        crate::platform::windows::DRIVER_CERT_FILE
-                    ));
-                }
                 #[cfg(all(windows, feature = "virtual_display_driver"))]
                 if crate::virtual_display_manager::is_virtual_display_supported() {
                     hbb_common::allow_err!(crate::virtual_display_manager::install_update_driver());
@@ -261,10 +245,9 @@ pub fn core_main() -> Option<Vec<String>> {
             return None;
         } else if args[0] == "--uninstall-service" {
             log::info!("start --uninstall-service");
-            crate::platform::uninstall_service(false);
+            crate::platform::uninstall_service(false, true);
+            return None;
         } else if args[0] == "--service" {
-            #[cfg(target_os = "macos")]
-            crate::platform::macos::hide_dock();
             log::info!("start --service");
             crate::start_os_service();
             return None;
@@ -275,7 +258,6 @@ pub fn core_main() -> Option<Vec<String>> {
             #[cfg(any(target_os = "linux", target_os = "windows"))]
             {
                 crate::start_server(true);
-                return None;
             }
             #[cfg(target_os = "macos")]
             {
@@ -284,6 +266,7 @@ pub fn core_main() -> Option<Vec<String>> {
                 // prevent server exit when encountering errors from tray
                 hbb_common::allow_err!(handler.join());
             }
+            return None;
         } else if args[0] == "--import-config" {
             if args.len() == 2 {
                 let filepath;
@@ -341,7 +324,7 @@ pub fn core_main() -> Option<Vec<String>> {
                     } else {
                         format!("{}.exe", args[1])
                     };
-                    if let Ok(lic) = crate::license::get_license_from_string(&name) {
+                    if let Ok(lic) = crate::custom_server::get_custom_server_from_string(&name) {
                         if !lic.host.is_empty() {
                             crate::ui_interface::set_option("key".into(), lic.key);
                             crate::ui_interface::set_option(
